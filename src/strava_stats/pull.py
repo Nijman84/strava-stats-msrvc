@@ -8,8 +8,8 @@ import glob
 import json
 import os
 import time
-from datetime import datetime, timezone
-from typing import Any, Dict, List
+from datetime import datetime, timezone, timedelta
+from typing import Any, Dict, List, Tuple
 
 import pandas as pd
 import requests
@@ -20,7 +20,7 @@ PER_PAGE_DEFAULT = 200  # Strava max
 
 
 # ---------- OAuth ----------
-def refresh_access_token(client_id: str, client_secret: str, refresh_token: str) -> tuple[str, int, int]:
+def refresh_access_token(client_id: str, client_secret: str, refresh_token: str) -> Tuple[str, int, int]:
     """Exchange refresh_token for access_token; persist rotated refresh_token if Strava returns one."""
     r = requests.post(
         TOKEN_URL,
@@ -175,12 +175,15 @@ def to_frame(activities: list[dict]) -> pd.DataFrame:
                 "map_id": m.get("id"),
                 "polyline": m.get("polyline"),
                 "summary_polyline": m.get("summary_polyline"),
+                # drives “newest wins” in compaction when kudos change
+                "ingestion_ts": a.get("ingestion_ts"),
             }
         )
     df = pd.DataFrame(rows)
     for col in ["start_date", "start_date_local"]:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors="coerce", utc=True)
+    # Keep ingestion_ts as string to avoid tz gymnastics; compaction casts if needed
     return df
 
 
@@ -194,6 +197,44 @@ def write_parquet_shard(df: pd.DataFrame, athlete_id: int) -> str | None:
     return path
 
 
+# ---------- Sliding-window kudos refresh ----------
+def refresh_recent_kudos(access_token: str, athlete_id: int, days: int = 21) -> Tuple[int, str | None]:
+    """
+    Re-pull recent activities (last N days) to refresh kudos_count (and any other evolving fields).
+    Writes a bronze Parquet shard; compaction will pick latest via ingestion_ts ordering.
+    Returns (row_count, parquet_path or None).
+    """
+    if days <= 0:
+        return (0, None)
+
+    after = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp())
+    per_page, page = PER_PAGE_DEFAULT, 1
+    rows: list[dict] = []
+
+    while True:
+        batch = fetch_page(access_token, page=page, per_page=per_page, after=after)
+        if not batch:
+            break
+        # TZ-less UTC so DuckDB parses deterministically
+        now_iso = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        for a in batch:
+            a["ingestion_ts"] = now_iso  # ensure “newest wins” in compaction
+        rows.extend(batch)
+        if len(batch) < per_page:
+            break
+        page += 1
+        time.sleep(0.2)
+
+    if not rows:
+        print(f"[kudos-refresh] No recent activities in last {days} days.")
+        return (0, None)
+
+    df = to_frame(rows)
+    pq_path = write_parquet_shard(df, athlete_id)
+    print(f"[kudos-refresh] Wrote {len(df)} rows to {pq_path}")
+    return (len(df), pq_path)
+
+
 # ---------- CLI ----------
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
@@ -203,6 +244,12 @@ def parse_args() -> argparse.Namespace:
         "--all", action="store_true", help="Full refresh (ignore existing Parquet and fetch everything)."
     )
     p.add_argument("--per-page", type=int, default=PER_PAGE_DEFAULT, help="Items per page (max 200).")
+    p.add_argument(
+        "--refresh-kudos-days",
+        type=int,
+        default=21,
+        help="Also re-pull the last N days to refresh kudos_count without a full backfill (0 disables).",
+    )
     return p.parse_args()
 
 
@@ -235,7 +282,12 @@ def main() -> None:
 
     per_page = min(max(args.per_page, 1), 200)
 
+    # Normal pull (incremental or full)
     activities = fetch_activities(access_token, per_page=per_page, after=after_ts)
+    # Stamp ingestion_ts so compaction prefers this batch over older duplicates
+    now_iso = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    for a in activities:
+        a["ingestion_ts"] = now_iso
 
     json_path = write_json_shard(activities, athlete_id)
     df = to_frame(activities)
@@ -248,6 +300,15 @@ def main() -> None:
     else:
         print("PARQUET -> (nothing new to write)")
 
+    # Sliding-window kudos refresh (skip if doing --all)
+    if not args.all and args.refresh_kudos_days > 0:
+        n, kudos_pq = refresh_recent_kudos(
+            access_token, athlete_id=athlete_id, days=args.refresh_kudos_days
+        )
+        if n > 0:
+            print(f"KUDOS REFRESH -> {kudos_pq} ({n} rows)")
+        else:
+            print("KUDOS REFRESH -> (no recent activities to refresh)")
 
 if __name__ == "__main__":
     main()
