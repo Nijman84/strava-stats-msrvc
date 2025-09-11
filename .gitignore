@@ -1,1 +1,18 @@
-dump/
+# env / OS
+.env
+.venv/
+.DS_Store
+
+# local data
+output/
+data/
+db/
+secrets/
+*.sqlite
+*.parquet
+*.json
+
+# python
+__pycache__/
+*.pyc
+*.pyo

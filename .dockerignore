@@ -1,0 +1,11 @@
+.git
+.venv
+__pycache__/
+*.pyc
+output/
+data/
+db/
+*.sqlite
+*.parquet
+*.json
+.DS_Store

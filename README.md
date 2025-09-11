@@ -2,7 +2,7 @@
 ## Author: Neal Hayes @Nijman84
 
 
-# Usage
+# Usage - incremental pull by default
 ```sh
 export STRAVA_CLIENT_ID=xxxxx
 export STRAVA_CLIENT_SECRET=xxxxx
@@ -13,7 +13,10 @@ export STRAVA_PER_PAGE=200
 python3 pull_strava_activities.py
 ```
 
-
+## Full pull
+```sh
+python3 pull_strava_activities.py --all
+```
 
 
 

@@ -1,0 +1,9 @@
+services:
+  pull:
+    build: .
+    env_file: .env
+    working_dir: /app
+    volumes:
+      - ./output:/app/output
+      - ./data:/app/data
+      - ./secrets:/app/secrets
