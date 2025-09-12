@@ -245,12 +245,19 @@ def select_backlog_ids(
         """
         return [r[0] for r in con.execute(q, [explicit_ids]).fetchall()]
 
-    source = "activities" if _exists(con, "activities") else None
+    def exists(name: str) -> bool:
+        return bool(con.execute(
+            "SELECT COUNT(*) FROM duckdb_tables() WHERE table_name = ?", [name]
+        ).fetchone()[0])
 
+    source = "activities" if exists("activities") else None
+
+    # Build filter
     filt_sql, params = "", []
     if not fetch_all:
         if since_days:
-            filt_sql = "WHERE start_date >= NOW() - INTERVAL ? DAY"
+            # DuckDB: parameters cannot appear inside INTERVAL literal → use scalar * INTERVAL 1 DAY
+            filt_sql = "WHERE start_date >= NOW() - (? * INTERVAL 1 DAY)"
             params = [since_days]
         else:
             filt_sql = "WHERE start_date >= NOW() - INTERVAL 30 DAY"
@@ -270,7 +277,7 @@ def select_backlog_ids(
         """
         return [r[0] for r in con.execute(q, params).fetchall()]
 
-    # Parquet fallback: data/activities/activities_*.parquet
+    # Parquet fallback
     pq_glob = str((BASE / "activities" / "activities_*.parquet").resolve())
     if glob.glob(pq_glob):
         q = f"""
@@ -293,6 +300,7 @@ def select_backlog_ids(
 
     print("[WARN] No 'activities' view and no Parquet shards found; nothing to enrich.")
     return []
+
 
 # --------------------------------------------------------------------------------------
 # Fetch + upsert
