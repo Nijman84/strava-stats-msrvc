@@ -6,9 +6,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src ./src
-
-# make the package importable: src/ is on the path
 ENV PYTHONPATH=/app/src
 
 # create dirs (also bind-mounted)
-RUN mkdir -p /app/output /app/data/activities
+RUN mkdir -p /app/data/activities

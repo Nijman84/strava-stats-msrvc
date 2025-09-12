@@ -24,8 +24,6 @@ def main() -> None:
 
     con.execute("CREATE SCHEMA IF NOT EXISTS gold;")
 
-    # Build the projection for typed CTE
-    # If ingestion_ts column exists, cast to TIMESTAMP; else synthesize NULL::TIMESTAMP
     ingestion_ts_expr = (
         "TRY_CAST(ingestion_ts AS TIMESTAMP) AS ingestion_ts"
         if has_ingestion_ts
@@ -86,9 +84,6 @@ def main() -> None:
 
     con.execute(create_gold_sql)
     con.execute("CREATE OR REPLACE VIEW activities AS SELECT * FROM gold.activities;")
-    # Ensure no legacy artefacts stick around
-    con.execute("DROP VIEW IF EXISTS strava_activities")
-    con.execute("DROP TABLE IF EXISTS strava_activities")
     con.execute("CHECKPOINT")
     con.close()
     print("Compaction complete. View 'activities' is ready (backed by gold.activities).")
