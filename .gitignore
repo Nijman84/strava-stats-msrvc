@@ -7,6 +7,7 @@
 output/
 data/
 db/
+dump/
 secrets/
 *.sqlite
 *.parquet

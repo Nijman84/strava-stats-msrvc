@@ -128,11 +128,15 @@ def fetch_activities(access_token: str, per_page: int, after: int | None) -> lis
     return all_items
 
 
-# ---------- Landers ----------
+# ---------- Landers (Bronze JSON + Parquet) ----------
 def write_json_shard(activities: list[dict], athlete_id: int) -> str:
-    os.makedirs("output", exist_ok=True)
+    """
+    Write SummaryActivity batch to bronze landing:
+      data/bronze/activities/strava_activities_<athleteId>_<yyyymmddhhmmss>.json
+    """
+    os.makedirs("data/bronze/activities", exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-    path = f"output/strava_activities_{athlete_id}_{ts}.json"
+    path = f"data/bronze/activities/strava_activities_{athlete_id}_{ts}.json"
     with open(path, "w", encoding="utf-8") as f:
         json.dump(activities, f, ensure_ascii=False, indent=2)
     return path
@@ -216,7 +220,7 @@ def refresh_recent_kudos(access_token: str, athlete_id: int, days: int = 21) -> 
         if not batch:
             break
         # TZ-less UTC so DuckDB parses deterministically
-        now_iso = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         for a in batch:
             a["ingestion_ts"] = now_iso  # ensure “newest wins” in compaction
         rows.extend(batch)

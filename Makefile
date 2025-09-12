@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help build ensure-dirs auth run run-lite run-all compact refresh recompact duck sql-%
+.PHONY: help build ensure-dirs auth run run-lite run-all compact refresh recompact duck sql-% enrich bronze-migrate-activities
 
 # ---------- Variables ----------
 SERVICE      ?= pull
@@ -9,6 +9,7 @@ DATA_DIR     := data
 SECRETS_DIR  := secrets
 PER_PAGE     ?= 200     # override: make run PER_PAGE=100
 DAYS         ?= 21      # kudos lookback window (days). override: make refresh DAYS=7
+ENRICH_ARGS  ?=
 
 # ---------- Help ----------
 help: ## Show this help (lists targets with their descriptions)
@@ -23,7 +24,7 @@ build: ## Build image(s)
 	docker compose build
 
 ensure-dirs: ## Create local output/data/secrets dirs if missing
-	@mkdir -p $(OUTPUT_DIR) $(DATA_DIR)/activities $(SECRETS_DIR)
+	@mkdir -p $(OUTPUT_DIR) $(DATA_DIR)/activities $(DATA_DIR)/silver/strava_activities $(DATA_DIR)/warehouse $(DATA_DIR)/bronze/activities $(DATA_DIR)/bronze/activity_details $(SECRETS_DIR)
 
 auth: ensure-dirs ## Bootstrap/refresh Strava OAuth (writes secrets/strava_token.json)
 	@test -f .env || (echo "Missing .env. Copy .env.example to .env"; exit 1)
@@ -46,6 +47,12 @@ run-all: ensure-dirs ## Full refresh (ignore existing Parquet, fetch everything)
 	docker compose run --rm $(SERVICE) \
 		python -m strava_stats.pull --all --per-page $(PER_PAGE)
 
+##@ Enrichment
+enrich: ensure-dirs ## Enrich activities with DetailedActivity (flags via ENRICH_ARGS)
+	@test -f .env || (echo "Missing .env. Copy .env.example to .env"; exit 1)
+	docker compose run --rm $(SERVICE) \
+		python -m strava_stats.enrich $(ENRICH_ARGS)
+
 ##@ Compaction
 compact: ensure-dirs ## Dedupe & partition shards into silver + refresh DuckDB view
 	@mkdir -p $(DATA_DIR)/silver/strava_activities $(DATA_DIR)/warehouse
@@ -62,6 +69,10 @@ refresh: ## Build -> run (with kudos lookback) -> compact (one-shot)
 	@echo "→ Running pull (per_page=$(PER_PAGE), kudos lookback $(DAYS)d)"
 	@$(MAKE) run
 	@$(MAKE) compact
+
+##@ Bronze migration helpers
+bronze-migrate-activities: ensure-dirs ## Move existing strava_activities_*.json from output -> bronze/activities
+	@sh -c 'set -e; mkdir -p data/bronze/activities; c=0; for f in output/strava_activities_*.json; do [ -e "$$f" ] || continue; mv "$$f" data/bronze/activities/; c=$$((c+1)); done; echo "Moved $$c file(s)."'
 
 ##@ DuckDB
 duck: ## Open DuckDB against the warehouse file
