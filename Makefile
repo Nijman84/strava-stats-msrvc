@@ -46,21 +46,24 @@ run-all: ensure-dirs ## Full refresh (ignore existing Parquet, fetch everything)
 	docker compose run --rm $(SERVICE) \
 		python -m strava_stats.pull --all --per-page $(PER_PAGE)
 
+##@ Compaction
+compact: ensure-dirs ## Dedupe & partition shards into gold + refresh DuckDB view
+	@mkdir -p $(DATA_DIR)/warehouse
+	@test -f .env || (echo "Missing .env. Copy .env.example to .env"; exit 1)
+	docker compose run --rm $(SERVICE) \
+		python -m strava_stats.compact		
+
 ##@ Enrichment
 enrich: ensure-dirs ## Enrich activities with DetailedActivity (flags via ENRICH_ARGS)
 	@test -f .env || (echo "Missing .env. Copy .env.example to .env"; exit 1)
 	docker compose run --rm $(SERVICE) \
 		python -m strava_stats.enrich $(ENRICH_ARGS)
 
-##@ Compaction
-compact: ensure-dirs ## Dedupe & partition shards into gold + refresh DuckDB view
-	@mkdir -p $(DATA_DIR)/warehouse
-	@test -f .env || (echo "Missing .env. Copy .env.example to .env"; exit 1)
-	docker compose run --rm $(SERVICE) \
-		python -m strava_stats.compact
-
 recompact: ## Re-run compaction only (useful after tweaking compact.py)
 	@$(MAKE) compact
+
+##@ Flow
+flow: run compact enrich ## Run the entire flow as would happen in production BAU
 
 ##@ Convenience
 refresh: ## Build -> run (with kudos lookback) -> compact (one-shot)
