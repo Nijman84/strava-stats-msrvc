@@ -1,10 +1,12 @@
 # Strava Stats Microservice
 
-Tiny, dockerised pipeline that pulls your Strava activities, lands **bronze** JSON + **Parquet**, compacts to a single **gold** `activities` table in DuckDB, and (optionally) enriches with Strava’s **DetailedActivity** API.
+Dockerised, reproducible pipeline to:
+- **Pull** your Strava activities (incremental by default)
+- Land **JSON** (bronze) & **Parquet** shards
+- **Compact** into a single **DuckDB** warehouse table
+- **Enrich** missing activities with Strava’s DetailedActivity API
 
-- Incremental pulls by default (watermark from your existing shards).
-- A **21‑day sliding window** refresh keeps `kudos_count` etc. up‑to‑date without full backfills.
-- Enrichment is **rate‑limit aware** and writes detailed payloads to bronze alongside flat tables.
+Everything runs in ephemeral containers; data persists on your host via bind mounts.
 
 ---
 
@@ -12,157 +14,179 @@ Tiny, dockerised pipeline that pulls your Strava activities, lands **bronze** JS
 
 ### 1) Prereqs
 - Docker + Docker Compose
-- A Strava API application (free): note your **Client ID** and **Client Secret**
+- A Strava API application (get **Client ID** and **Client Secret**)
 
 ### 2) Configure `.env`
-Copy and fill:
 ```bash
 cp .env.example .env
-# add your STRAVA_* values
+# Edit with your STRAVA_CLIENT_ID and STRAVA_CLIENT_SECRET
+# (STRAVA_REDIRECT_URI is optional; defaults to http://localhost/exchange_token)
 ```
 
-### 3) Authorise once
+### 3) Build & Authorise once
 ```bash
 make build
-make auth   # opens device flow; stores refresh token at secrets/strava_token.json
+make auth   # opens an auth URL; paste back the redirect URL or code
+# refresh token is saved to ./secrets/strava_token.json and auto-rotated on each run
 ```
 
-### 4) Pull → Compact
+### 4) Run the pipeline
 ```bash
-make run         # incremental pull + 21d kudos refresh
-make compact     # materialises gold.activities and view activities
+# Incremental pull (default), then compact, then enrich:
+make flow
+
+# Or step-by-step:
+make run          # pull (incremental; uses watermark from existing Parquet)
+make compact      # upsert/merge into DuckDB warehouse
+make enrich       # fetch details for missing activities (throttled)
 ```
 
-### 5) Optional: Enrich with DetailedActivity
+### 5) Full backfill (once, if needed)
 ```bash
-# enrich everything missing details
-make enrich ENRICH_ARGS="--all"
-
-# or: only last N days
-make enrich ENRICH_ARGS="--since-days 30"
-
-# or: surgical
-make enrich ENRICH_ARGS="--ids 1234567890,1234567891"
-
-# include segment efforts (heavier)
-make enrich ENRICH_ARGS="--all --include-efforts"
-```
-
-**Rate‑limit safety knobs** (defaults shown):
-```bash
-make enrich ENRICH_ARGS="--all --cushion-15min 10 --cushion-daily 10 --max-calls 400"
+make run-all      # ignore watermark, pull everything
+make compact
+make enrich
 ```
 
 ---
 
-## Directory layout
+## Repo & data layout
 
 ```
+src/strava_stats/
+  pull.py                 # pulls SummaryActivity → JSON/Parquet
+  compact.py              # compacts shards → DuckDB table
+  enrich.py               # fetches DetailedActivity for missing ids
+  auth.py                 # one-time OAuth helper
+  token_store.py          # persists rotating refresh token
+
+output/                   # JSON drops (bronze)
 data/
-  activities/                     # Parquet shards from pulls
-  bronze/
-    activities/                   # Raw SummaryActivity batches (JSON)
-      strava_activities_<athleteId>_<yyyymmddhhmmss>.json
-    activity_details/             # Raw DetailedActivity payloads (JSON)
-      strava_detailed_activity_<athleteId>_<activityId>_<yyyymmddhhmmss>.json
-  warehouse/
-    strava.duckdb                 # DuckDB file (gold + views)
+  activities/             # Parquet shards (bronze)
+warehouse/
+  strava.duckdb           # DuckDB file (gold + details)
 secrets/
-  strava_token.json               # refresh token persisted after 'make auth'
+  strava_token.json       # rotating refresh token (do not commit)
+
+Dockerfile
+docker-compose.yml
+Makefile
+requirements.txt
+```
+
+---
+
+## Commands (Make targets)
+
+```bash
+make build         # build the Docker image
+
+make auth          # one-time OAuth; saves rotating refresh token to ./secrets
+
+make run           # incremental pull (per-page configurable)
+make run-all       # full backfill (ignores existing Parquet)
+
+make compact       # dedupe & upsert all shards into DuckDB
+
+make enrich        # fetch details for activities missing in warehouse (throttled)
+
+make flow          # run → compact → enrich (in that order)
+```
+
+### Tunables
+
+- `PER_PAGE` (default `200`): `make run PER_PAGE=150`
+- `ENRICH_LIMIT` (default `100`): `make enrich ENRICH_LIMIT=50`
+- `STRAVA_ENRICH_SLEEP_MS` (default `200`): set in `.env` to throttle detail calls
+- `STRAVA_WAREHOUSE` (default `warehouse/strava.duckdb`): override in `.env` if desired
+
+Environment variables consumed (via `.env`):
+```
+STRAVA_CLIENT_ID=...
+STRAVA_CLIENT_SECRET=...
+# optional:
+STRAVA_REDIRECT_URI=http://localhost/exchange_token
+STRAVA_SCOPE=read,activity:read,activity:read_all
+STRAVA_ENRICH_SLEEP_MS=200
+STRAVA_WAREHOUSE=warehouse/strava.duckdb
+STRAVA_ENRICH_MAX=100   # legacy; use ENRICH_LIMIT with make if set
 ```
 
 ---
 
 ## What gets created
 
-**Gold**
-- `gold.activities` (table) — deduped, typed rollup of Parquet shards
-- `activities` (view) — simple `SELECT * FROM gold.activities`
+**Bronze**
+- `output/strava_activities_<athleteId>_<yyyymmddhhmmss>.json`
+- `data/activities/activities_<athleteId>_<yyyymmddhhmmss>.parquet`
 
-**Details**
-- `activity_details` — flattened subset of DetailedActivity (one row per activity)
-- `activity_splits_metric` — metric splits (1km etc.)
-- `activity_splits_standard` — imperial splits (1mi etc.)
-- `activity_segment_efforts` — only when `--include-efforts`
+**Warehouse (DuckDB)**
+- `strava.activities` — merged/deduped activities from all shards
+- `strava.activity_details` — one JSON payload per activity (created by `enrich`)
 
----
-
-## Common queries
-
-Open DuckDB:
+Open the warehouse with the DuckDB CLI if you have it installed:
 ```bash
-make duck
+duckdb warehouse/strava.duckdb
 ```
 
-Examples:
+Example queries:
 ```sql
--- Newest 10 activities
 SELECT id, start_date, name, sport_type, distance
-FROM activities
+FROM strava.activities
 ORDER BY start_date DESC
 LIMIT 10;
 
--- Join details
-SELECT a.id, a.start_date, a.distance, d.kudos_count, d.average_heartrate
-FROM activities a
-LEFT JOIN activity_details d ON d.activity_id = a.id
+SELECT a.id, a.start_date, (d.json->>'kudos_count')::INT AS kudos
+FROM strava.activities a
+LEFT JOIN strava.activity_details d ON d.id = a.id
 ORDER BY a.start_date DESC
 LIMIT 20;
-
--- Splits for an activity
-SELECT split_index, distance_m, elapsed_time_seconds, average_speed
-FROM activity_splits_metric
-WHERE activity_id = 1234567890
-ORDER BY split_index;
 ```
 
 ---
 
-## Tips & Troubleshooting
+## How incremental works
 
-- **“Nothing to enrich”** right after pull? Run `make compact` first so the `activities` view exists; or pass `--ids` to enrich directly.
-- **DuckDB CLI not seeing new rows** created by a running job? Either reconnect the CLI, or run `PRAGMA disable_object_cache;` once per session.
-- **429 rate limits** during enrich are handled automatically. You can reduce concurrency via `--max-calls` and increase cushions.
-- This project intentionally has **no `strava_activities` view**. The canonical surface is `activities`.
+- `pull.py` scans existing `data/activities/*.parquet` and uses the **max(start_date)** as a watermark (Strava `after=` param).
+- `compact.py` loads all shards, deduplicates by `id` (latest by `start_date`), and **upserts** into `strava.activities`.
+- `enrich.py` asks the warehouse for **activities missing details** and fetches those, upserting into `strava.activity_details`.
 
 ---
 
-## Makefile targets
+## Scheduling (later)
 
-> `make help` prints this list with descriptions.
+This repo is ready for cron/GitHub Actions/etc. For cron, call the ephemeral job:
+```
+0 6 * * * cd /path/to/strava-stats-msrvc &&   make run && make compact && make enrich >> logs/pull.log 2>&1
+```
 
-### Build & Auth
-- `make build` — Build image(s)
-- `make auth` — Device-code OAuth; persists refresh token to `secrets/strava_token.json`
+---
 
-### Pull
-- `make run` — Incremental pull **with** kudos lookback (21d).
-  Override: `make run PER_PAGE=100 DAYS=7`
-- `make run-lite` — Pull without kudos lookback
-- `make run-all` — Full backfill (ignores Parquet watermark)
+## Troubleshooting
 
-### Enrich
-- `make enrich ENRICH_ARGS="..."` — See examples above
+- **401 / invalid_grant** on pull/enrich  
+  Your refresh token is stale/revoked. Run `make auth` again (one-time), which re-seeds `./secrets/strava_token.json`.
 
-### Compact
-- `make compact` — Dedup shards → `gold.activities`; creates `activities` view
+- **`ModuleNotFoundError: strava_stats.*`**  
+  Rebuild the image after adding new files: `make build`.
 
-### Convenience
-- `make refresh` — `build → run → compact`
+- **No data written**  
+  Ensure you’re running from repo root so bind mounts map `./output` and `./data` into the container.
 
-### DuckDB
-- `make duck` — Open DuckDB shell
-- `make sql-"SELECT count(*) FROM activities;"` — One-liner SQL
+- **Compose warns: `version is obsolete`**  
+  We intentionally omit the `version:` key; the warning goes away once removed.
 
 ---
 
 ## Privacy
 
-Tokens live only in `secrets/strava_token.json`. Data lands only under `./data/**` on your machine.
+- Tokens live only under `./secrets/strava_token.json` (not committed).
+- All data lands under your local `./output`, `./data`, and `./warehouse` directories.
 
 ---
 
-## Roadmap / Ideas
+## Roadmap
 
-- Materialised views for common roll‑ups (week/month summaries)
-- Lightweight UI on top of DuckDB
+- Add metrics/views (weekly/monthly rollups) in DuckDB  
+- Optional kudos/HR refresh windows  
+- CLI flags for targeted enrich (ids/date ranges)
