@@ -226,6 +226,74 @@ def ensure_schema(con: duckdb.DuckDBPyConnection) -> None:
         con.execute("ALTER TABLE activity_details DROP COLUMN raw_json")
 
 # --------------------------------------------------------------------------------------
+# Kudos sync (cheap runtime fix)
+# --------------------------------------------------------------------------------------
+def sync_kudos_from_activities(con: duckdb.DuckDBPyConnection, since_days: Optional[int]) -> Tuple[int, int]:
+    """
+    Update activity_details.kudos_count to match the (higher) value in activities
+    within the since_days window (default 30). Returns (updated_rows, missing_details_rows).
+    """
+    if not _exists(con, "activities"):
+        print("[kudos-sync] Skipped: no 'activities' view/table.")
+        return 0, 0
+
+    window_days = since_days if since_days is not None else 30
+    params = [window_days]
+
+    # How many will change?
+    upd_count = con.execute(
+        """
+        WITH a AS (
+          SELECT CAST(id AS BIGINT) AS activity_id, kudos_count
+          FROM activities
+          WHERE start_date >= NOW() - (? * INTERVAL 1 DAY)
+        )
+        SELECT COUNT(*)
+        FROM activity_details d
+        JOIN a ON a.activity_id = d.activity_id
+        WHERE a.kudos_count IS NOT NULL
+          AND (d.kudos_count IS NULL OR a.kudos_count > d.kudos_count)
+        """,
+        params,
+    ).fetchone()[0]
+
+    # Apply the update
+    con.execute(
+        """
+        UPDATE activity_details AS d
+        SET kudos_count = a.kudos_count
+        FROM (
+          SELECT CAST(id AS BIGINT) AS activity_id, kudos_count
+          FROM activities
+          WHERE start_date >= NOW() - (? * INTERVAL 1 DAY)
+        ) AS a
+        WHERE d.activity_id = a.activity_id
+          AND a.kudos_count IS NOT NULL
+          AND (d.kudos_count IS NULL OR a.kudos_count > d.kudos_count)
+        """,
+        params,
+    )
+
+    # Count activities in the window with no details row (for visibility)
+    missing_count = con.execute(
+        """
+        WITH a AS (
+          SELECT CAST(id AS BIGINT) AS activity_id
+          FROM activities
+          WHERE start_date >= NOW() - (? * INTERVAL 1 DAY)
+        )
+        SELECT COUNT(*)
+        FROM a
+        LEFT JOIN activity_details d ON d.activity_id = a.activity_id
+        WHERE d.activity_id IS NULL
+        """,
+        params,
+    ).fetchone()[0]
+
+    print(f"[kudos-sync] Updated {upd_count} rows. Missing details rows in window: {missing_count}.")
+    return upd_count, missing_count
+
+# --------------------------------------------------------------------------------------
 # Backlog selection (activities -> parquet fallback)
 # --------------------------------------------------------------------------------------
 def select_backlog_ids(
@@ -300,7 +368,6 @@ def select_backlog_ids(
 
     print("[WARN] No 'activities' view and no Parquet shards found; nothing to enrich.")
     return []
-
 
 # --------------------------------------------------------------------------------------
 # Fetch + upsert
@@ -521,10 +588,21 @@ def run(
     con = duckdb.connect(str(WAREHOUSE_DB))
     ensure_schema(con)
 
+    # Always perform a cheap "kudos sync" so details doesn't lag activities
+    try:
+        sync_kudos_from_activities(con, since_days)
+    except Exception as e:
+        print(f"[kudos-sync] WARN: {e}")
+
     explicit_ids = [int(x) for x in ids_csv.split(",")] if ids_csv else None
     backlog = select_backlog_ids(con, all_, since_days, explicit_ids)
+
     if not backlog:
         print("Nothing to enrich. ✓")
+        try:
+            con.execute("CHECKPOINT")
+        except Exception:
+            pass
         con.close()
         return
 
@@ -535,6 +613,10 @@ def run(
     if dry_run:
         print(f"[DRY-RUN] Backlog candidates: {len(backlog)}")
         print("[DRY-RUN] Will pace using live headers during execution.")
+        try:
+            con.execute("CHECKPOINT")
+        except Exception:
+            pass
         con.close()
         return
 
@@ -579,6 +661,12 @@ def run(
         u15, l15 = budget.used_15, budget.limit_15
         uday, lday = budget.used_day, budget.limit_day
         print(f"[{processed}/{target}] activity_id={aid} | 15m {u15}/{l15} | day {uday}/{lday}")
+
+    # One more quick sync in case the list enrich was partial
+    try:
+        sync_kudos_from_activities(con, since_days)
+    except Exception as e:
+        print(f"[kudos-sync] WARN: {e}")
 
     print(f"Done. Processed {processed} activities.")
     try:

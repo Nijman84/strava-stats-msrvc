@@ -7,4 +7,18 @@ services:
       - ./data:/app/data
       - ./secrets:/app/secrets
     user: "${UID:-1000}:${GID:-1000}"
-    environment: [ "PYTHONUNBUFFERED=1" ]
+    environment: ["PYTHONUNBUFFERED=1"]
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: docker/scheduler/Dockerfile
+    container_name: strava-scheduler
+    environment:
+      - TZ=Europe/London
+    volumes:
+      - ./:/repo                               # repo bind mount
+      - /var/run/docker.sock:/var/run/docker.sock  # talk to host Docker
+    working_dir: /repo
+    command: ["/repo/cron/strava.cron"]        # optional; default set in Dockerfile
+    restart: unless-stopped

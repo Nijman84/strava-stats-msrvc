@@ -4,16 +4,21 @@
 .DS_Store
 
 # local data
-output/
+.locks/
 data/
 db/
 dump/
+logs/
+output/
 secrets/
-*.sqlite
-*.parquet
 *.json
+*.parquet
+*.sqlite
 
 # python
 __pycache__/
 *.pyc
 *.pyo
+
+
+
