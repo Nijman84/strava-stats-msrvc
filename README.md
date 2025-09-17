@@ -262,3 +262,9 @@ If `activities.kudos_count` is higher than `activity_details.kudos_count` in the
 - Metrics/views (weekly/monthly rollups) in DuckDB
 - Optional structured log shipping (Loki/OpenSearch/CloudWatch)
 - Targeted enrich (ids/date ranges) & per-stage timings
+
+---
+
+## License
+Code: Apache License 2.0 — see [LICENSE](./LICENSE).  
+Attribution: see [NOTICE](./NOTICE).
