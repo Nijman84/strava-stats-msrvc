@@ -9,7 +9,7 @@ SHELL := /bin/bash
         schedule-exec schedule-time schedule-init flow-latest clean-logs
 
 # ---------- Variables ----------
-DOCKER_COMPOSE ?= docker compose
+DOCKER_COMPOSE ?= ./scripts/dc.sh
 SERVICE        ?= pull
 DATA_DIR       := data
 SECRETS_DIR    := secrets

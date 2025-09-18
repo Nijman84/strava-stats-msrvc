@@ -1,3 +1,3 @@
 # TZ is handled by the container; this runs at 05:00 Europe/London every day.
 # All stdout/stderr is appended to a scheduler log, while flow.sh also writes its own timestamped log files.
-0 5 * * * /bin/sh -lc "/repo/scripts/flow.sh >> /repo/logs/scheduler/cron.log 2>&1"
+0 5 * * * /bin/sh -lc '/repo/scripts/flow.sh' >> /repo/logs/scheduler/cron.log 2>&1
