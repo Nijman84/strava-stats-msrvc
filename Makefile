@@ -3,7 +3,8 @@ SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 
 .PHONY: help build ensure-dirs env-ok check \
-        auth run run-lite run-all compact recompact enrich refresh flow flow-now \
+        auth run run-lite run-all compact recompact enrich enrich-all \
+        refresh flow flow-backfill flow-now \
         duck sql-% \
         schedule-build schedule-up schedule-down schedule-restart schedule-logs schedule-ps \
         schedule-exec schedule-time schedule-init flow-latest clean-logs
@@ -18,7 +19,10 @@ DAYS           ?= 21      # kudos lookback window (days). override: make refresh
 
 # Default enrich behaviour: refresh recent details and don't skip due to cushions
 # (your enrich.py supports --since-days, --cushion-15min, --cushion-daily)
-ENRICH_ARGS    ?= --since-days $(DAYS) --cushion-15min 0 --cushion-daily 0
+ENRICH_ARGS        ?= --since-days $(DAYS) --cushion-15min 0 --cushion-daily 0
+
+# Full backfill enrich args: scan ALL activities for gaps in activity_details
+ENRICH_ALL_ARGS    ?= --all --cushion-15min 0 --cushion-daily 0
 
 CRON_FILE      ?= cron/strava.cron
 SCHEDULER_SVC  ?= scheduler
@@ -78,9 +82,19 @@ enrich: check ## Enrich activities with DetailedActivity (uses ENRICH_ARGS defau
 	@echo "→ Enrich args: $(ENRICH_ARGS)"
 	$(COMPOSE_RUN) $(PYMOD).enrich $(ENRICH_ARGS)
 
+enrich-all: check ## Enrich ALL missing details (activities.id NOT IN activity_details)
+	@echo "→ Enrich ALL args: $(ENRICH_ALL_ARGS)"
+	$(COMPOSE_RUN) $(PYMOD).enrich $(ENRICH_ALL_ARGS)
+
 ##@ Flow
-flow: run compact ## Run the entire flow (pull -> compact -> enrich recent details)
+flow: run compact ## Pull -> Compact -> Enrich recent details
 	@$(MAKE) enrich
+
+flow-backfill: ## FULL backfill: pull --all -> compact -> enrich --all
+	@echo "→ Backfill: pull --all, compact, enrich --all"
+	@$(MAKE) run-all
+	@$(MAKE) compact
+	@$(MAKE) enrich-all
 
 FLOW_ARGS ?=
 flow-now: ## Run the full flow now (host) with logging; e.g. make flow-now FLOW_ARGS="--since-days 1"

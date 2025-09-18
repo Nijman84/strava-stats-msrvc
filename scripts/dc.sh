@@ -1,4 +1,5 @@
 #!/bin/sh
+# scripts/dc.sh - robust wrapper that prefers `docker compose` and falls back to `docker-compose`
 set -e
 if docker compose version >/dev/null 2>&1; then
   exec docker compose "$@"
