@@ -93,9 +93,11 @@ make schedule-logs
 make schedule-ps
 make schedule-exec
 make schedule-time
+make schedule-doctor  # verify docker socket + compose in the scheduler
+make schedule-shell   # shell into the scheduler container
 
 # Convenience
-make flow-now        # run full flow now (host) with logging
+make flow-now        # run full flow now (host) with logging)
 make flow-latest     # tail the most recent flow log
 make clean-logs      # wipe logs (plain + JSONL + scheduler)
 ```
@@ -138,12 +140,25 @@ make schedule-exec   # run one flow inside the scheduler container
 ```
 
 **Change the schedule**
-- Edit `cron/strava.cron` (default: `0 5 * * * /bin/sh -lc "/repo/scripts/flow.sh >> /repo/logs/scheduler/cron.log 2>&1"`)
-- Apply with: `make schedule-restart`
+- Edit `cron/strava.cron`. The default entry looks like:
+  ```cron
+  # run daily at 05:00 Europe/London, stream to scheduler log
+  0 5 * * * HOST_REPO={{ABSOLUTE_PATH_ON_HOST}} /bin/sh -lc "/repo/scripts/flow.sh >> /repo/logs/scheduler/cron.log 2>&1"
+  ```
+  Replace `{{ABSOLUTE_PATH_ON_HOST}}` with your repo path (e.g., `/Users/you/code/strava-stats-msrvc` on macOS).  
+  This lets the wrapper call **host** Docker Compose from inside the scheduler container so bind mounts resolve to your real filesystem.
+- Apply changes with: `make schedule-restart`
+
+**Useful checks**
+```bash
+make schedule-time     # the container's local time (TZ=Europe/London)
+make schedule-doctor   # sanity-check docker & compose + /var/run/docker.sock
+make schedule-shell    # interactive /bin/sh inside scheduler
+```
 
 **Notes**
-- Scheduler container runs with `TZ=Europe/London` and `restart: unless-stopped` (ensure Docker auto-starts).
-- If the machine is asleep at 05:00, that run is skipped (no catch-up). For catch-up semantics, consider Airflow.
+- Scheduler runs with `restart: unless-stopped` (ensure Docker auto-starts at login).
+- If the machine is asleep at 05:00, that run is skipped (no catch-up). For catch-up semantics, consider Airflow (`dags/` includes an example DAG).
 
 ---
 
@@ -162,33 +177,47 @@ Retention (handled by the script):
 
 ---
 
-## Repo & data layout
+## Project structure (high-level)
 
 ```
-scripts/flow.sh                 # logging wrapper: human + JSONL, lock, retention
-cron/strava.cron               # 05:00 Europe/London schedule
-docker/scheduler/Dockerfile    # tiny scheduler image
-
-src/strava_stats/
-  auth.py                      # OAuth helper (writes secrets/strava_token.json)
-  pull.py                      # SummaryActivity → JSON/Parquet (bronze)
-  compact.py                   # shards → DuckDB (gold/views)
-  enrich.py                    # DetailedActivity + kudos sync (details/splits/efforts)
-
-data/
-  bronze/
-    activities/                # SummaryActivity JSON (pull)
-    activity_details/          # DetailedActivity JSON (enrich)
-  activities/                  # Parquet shards (pull; incremental + kudos lookback)
-  warehouse/
-    strava.duckdb              # DuckDB (gold views + details/splits/efforts tables)
-
-secrets/
-  strava_token.json            # rotating refresh token (do not commit)
-
-docker-compose.yml
-Makefile
-requirements.txt
+.
+├── cron/
+│   └── strava.cron               # supercronic schedule (05:00 Europe/London by default)
+├── dags/
+│   └── strava_stats_msrvc.example.py  # optional Airflow example
+├── data/
+│   ├── activities/               # Parquet shards (pull; incremental + kudos lookback)
+│   ├── bronze/
+│   │   ├── activities/           # SummaryActivity JSON (pull)
+│   │   └── activity_details/     # DetailedActivity JSON (enrich)
+│   └── warehouse/
+│       └── strava.duckdb         # DuckDB (gold views + details/splits/efforts tables)
+├── docker/
+│   └── scheduler/
+│       └── Dockerfile            # tiny scheduler image (supercronic + docker CLI)
+├── logs/
+│   ├── flow/                     # per-run human logs + JSONL
+│   │   └── structured/
+│   └── scheduler/                # cron driver log
+├── scripts/
+│   ├── dc.sh                     # docker compose wrapper (host CLI; certs/env friendly)
+│   └── flow.sh                   # locking + logging wrapper around `make flow`
+├── secrets/
+│   ├── corp-root.pem             # (optional) corporate CA
+│   ├── corp-bundle.pem           # (optional) corporate CA bundle
+│   └── strava_token.json         # rotating refresh token (created by `make auth`)
+├── src/
+│   └── strava_stats/
+│       ├── auth.py               # OAuth helper
+│       ├── pull.py               # SummaryActivity → JSON/Parquet (bronze)
+│       ├── compact.py            # shards → DuckDB (gold/views)
+│       ├── enrich.py             # DetailedActivity + kudos sync
+│       └── token_store.py
+├── docker-compose.yml
+├── Dockerfile
+├── Makefile
+├── requirements.txt
+└── README.md
 ```
 
 ---
@@ -252,6 +281,10 @@ If `activities.kudos_count` is higher than `activity_details.kudos_count` in the
 
 ## Troubleshooting
 
+- **Scheduler can’t see your files or Docker**  
+  On macOS/Windows, share your repo path in **Docker Desktop → Settings → Resources → File Sharing**.  
+  Then run: `make schedule-doctor`
+
 - **Stale reads in DuckDB**  
   DuckDB uses **snapshot isolation** per connection. After `make flow`, you might not see updates on an already-open connection until you `COMMIT` or **reconnect**.
 
@@ -263,9 +296,6 @@ If `activities.kudos_count` is higher than `activity_details.kudos_count` in the
 
 - **No data written**  
   Run from repo root so bind mounts map `./data`, `./secrets`, etc.
-
-- **macOS: Xcode/CLT licence prompt** (exit code 69)  
-  Accept once: `sudo xcodebuild -license accept`
 
 - **Windows line endings**  
   Ensure `cron/strava.cron` uses **LF** (not CRLF).
@@ -288,21 +318,23 @@ unable to get local issuer certificate
    REQUESTS_CA_BUNDLE=/app/secrets/corp-bundle.pem
    CURL_CA_BUNDLE=/app/secrets/corp-bundle.pem
    ```
-4. (Recommended) Keep public CAs + add corporate CA:
-   ```bash
-   ./scripts/dc.sh run --rm pull sh -lc '
-     python - <<PY > /app/secrets/ca-bundle.pem
-   import certifi, sys
-   sys.stdout.write(open(certifi.where(),"r").read())
-   sys.stdout.write(open("/app/secrets/corp-bundle.pem","r").read())
-   PY
-   '
-   ```
-   Then set:
-   ```env
-   REQUESTS_CA_BUNDLE=/app/secrets/ca-bundle.pem
-   ```
-5. Retry `make auth`.
+
+*(Optional but recommended)* Keep public CAs + add corporate CA:
+```bash
+./scripts/dc.sh run --rm pull sh -lc '
+  python - <<PY > /app/secrets/ca-bundle.pem
+import certifi, sys
+sys.stdout.write(open(certifi.where(),"r").read())
+sys.stdout.write(open("/app/secrets/corp-bundle.pem","r").read())
+PY
+'
+```
+Then set:
+```env
+REQUESTS_CA_BUNDLE=/app/secrets/ca-bundle.pem
+```
+
+Retry `make auth` or `make flow`.
 
 ---
 

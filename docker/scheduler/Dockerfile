@@ -1,29 +1,29 @@
 # docker/scheduler/Dockerfile
-FROM alpine:3.20
+# Small, reliable: Docker CLI (with compose) + supercronic + make + tzdata.
 
-# Core tools + Docker CLI + Compose v2 plugin + uuidgen
-RUN apk add --no-cache \
-    bash curl tzdata ca-certificates make git \
-    docker-cli docker-cli-compose util-linux
+FROM docker:27.3.1-cli
 
-# Supercronic
-ARG SUPERCRONIC_VERSION=v0.2.34
-RUN set -eux; \
-    ARCH="$(apk --print-arch)"; \
-    case "$ARCH" in \
-      x86_64)  SUPERCR_ARCH=amd64 ;; \
-      aarch64) SUPERCR_ARCH=arm64 ;; \
-      *) echo "Unsupported arch for supercronic: $ARCH" >&2; exit 1 ;; \
-    esac; \
-    SUPERCR_URL="https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-${SUPERCR_ARCH}"; \
-    echo "Fetching $SUPERCR_URL"; \
-    curl -fsSL -o /usr/local/bin/supercronic "$SUPERCR_URL"; \
-    chmod +x /usr/local/bin/supercronic
+# shells & tools
+RUN apk add --no-cache bash make tzdata curl ca-certificates
 
-# Optional: docker-compose v1 shim to the v2 plugin
-RUN ln -sf /usr/libexec/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose
+# supercronic (tiny, robust cron for containers)
+ARG SUPERCRONIC_VERSION=v0.2.33
+ADD https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-amd64 /usr/local/bin/supercronic
+RUN chmod +x /usr/local/bin/supercronic
 
-ENV TZ=Europe/London
+# Ensure Docker Compose v2 plugin is present in a standard plugin dir
+# (see Docker docs: plugin search paths include /usr/local/lib/docker/cli-plugins) 
+# Pin a known-good Compose release; adjust as you like.
+ARG COMPOSE_VERSION=v2.29.7
+RUN mkdir -p /usr/local/lib/docker/cli-plugins && \
+    curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
+      https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-x86_64 && \
+    chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+# Default TZ honoured via environment; your compose sets TZ=Europe/London
 WORKDIR /repo
-COPY . /repo
-CMD ["/bin/sh","-lc","exec /usr/local/bin/supercronic -passthrough-logs /repo/cron/strava.cron"]
+
+# supercronic makes cron lines observable and robust
+# Entrypoint runs whatever cron file you pass as the CMD/command.
+ENTRYPOINT ["/usr/local/bin/supercronic", "-json"]
+CMD ["/etc/cron/strava.cron"]

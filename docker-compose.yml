@@ -16,8 +16,13 @@ services:
     container_name: strava-scheduler
     environment:
       - TZ=Europe/London
-    volumes:
-      - ./:/repo
-      - /var/run/docker.sock:/var/run/docker.sock
+      - HOST_REPO=${PWD}                    # <- absolute host path injected by Compose
     working_dir: /repo
+    volumes:
+      - ./:/repo                           # repo at /repo (for scripts/cron)
+      - ${PWD}:${PWD}                       # <- same repo mounted at the *host* absolute path
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: ["/repo/cron/strava.cron"]
     restart: unless-stopped
+
+

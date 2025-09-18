@@ -1,3 +1,11 @@
 # cron/strava.cron
-# 05:00 Europe/London daily
-0 5 * * * /bin/sh -lc "mkdir -p /repo/logs/scheduler && /repo/scripts/flow.sh >> /repo/logs/scheduler/cron.log 2>&1"
+# Run the logged wrapper (uses your existing Make target) at 05:00 local time.
+# NOTE: file must have LF endings (not CRLF) on Windows.
+
+# ┌─ min (0-59)
+# │ ┌─ hour (0-23)
+# │ │ ┌─ day of month (1-31)
+# │ │ │ ┌─ month (1-12)
+# │ │ │ │ ┌─ day of week (0-6; Sun=0)
+# │ │ │ │ │
+0 5 * * * /bin/sh -lc 'make -C /repo flow-now >> /repo/logs/scheduler/cron.log 2>&1'

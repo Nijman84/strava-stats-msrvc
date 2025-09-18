@@ -7,7 +7,8 @@ SHELL := /bin/bash
         refresh flow flow-backfill flow-now \
         duck sql-% \
         schedule-build schedule-up schedule-down schedule-restart schedule-logs schedule-ps \
-        schedule-exec schedule-time schedule-init flow-latest clean-logs
+        schedule-exec schedule-time schedule-init flow-latest clean-logs \
+		schedule-doctor schedule-shell
 
 # ---------- Variables ----------
 DOCKER_COMPOSE ?= ./scripts/dc.sh
@@ -140,6 +141,13 @@ schedule-time: ## Print the container's idea of local time (checks TZ)
 
 schedule-init: ## One-time: create host log dirs so cron appends cleanly
 	mkdir -p logs/scheduler
+
+schedule-doctor: ## Verify scheduler can see docker & compose and the socket
+	$(DOCKER_COMPOSE) exec $(SCHEDULER_SVC) /bin/sh -lc \
+		'whoami && date && docker version && docker compose version && ls -l /var/run/docker.sock'
+
+schedule-shell: ## Drop into a shell inside the scheduler
+	$(DOCKER_COMPOSE) exec $(SCHEDULER_SVC) /bin/sh	
 
 flow-latest: ## Tail the most recent flow log
 	tail -f logs/flow/latest.log
