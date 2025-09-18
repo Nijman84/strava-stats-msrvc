@@ -1,17 +1,21 @@
 # Strava Stats Microservice
 
-## What is it
+## What is it?
 Dockerised, reproducible pipeline to:
 
+### The Ingestion, ETL, Curation service: **Pull**
 - **Pull** your Strava activities (incremental by default, with a configurable kudos lookback window)
+- Runs in ephemeral containers. data persists on your host via bind mounts (but are not source-controlled for data protection)
 - Land **JSON (bronze)** and **Parquet** shards
 - **Compact** into a **DuckDB** warehouse (gold/views)
 - **Enrich** activities with Strava’s DetailedActivity API (plus a lightweight **kudos sync** so details never lag the list view)
 
-Everything runs in ephemeral containers; data persists on your host via bind mounts.
+### Cron Scheduler Sidecar service: **Scheduler**
+- Scheduler sidecar (optional) for daily scheduling using local cron (5am Europe/London by default)
+- Container persists until torn down or system restart
+
 
 ---
-
 ## Quick start
 
 ### 1) Prereqs
@@ -72,7 +76,7 @@ make auth
 make run             # incremental pull (uses DAYS for kudos lookback)
 make run-lite        # pull without kudos lookback (fast path)
 make run-all         # full pull back to day zero
-make compact
+make compact         # upsert/merge into DuckDB warehouse and refresh views
 make recompact       # re-run compaction only
 make enrich          # enrich recent window (defaults to --since-days $(DAYS))
 make enrich-all      # enrich ALL missing details (activities.id NOT IN activity_details)
@@ -85,16 +89,16 @@ make duck            # open CLI against data/warehouse/strava.duckdb
 make sql-"SELECT count(*) FROM activities;"
 
 # Scheduler (cron-in-a-container)
-make schedule-build
-make schedule-up
-make schedule-down
-make schedule-restart
-make schedule-logs
-make schedule-ps
-make schedule-exec
-make schedule-time
-make schedule-doctor  # verify docker socket + compose in the scheduler
-make schedule-shell   # shell into the scheduler container
+make schedule-build    # build Docker image for the cron scheduler sidecar
+make schedule-up       # spin up the Scheduler container with default 5am daily activity ingest
+make schedule-down     # tear down Scheduler
+make schedule-restart  # restart Scheduler container
+make schedule-logs     # tail active Scheduler container logs
+make schedule-ps       # check Scheduler container status
+make schedule-exec     # adhoc ingest _flow_ NOW inside the Scheduler container
+make schedule-time     # check Scheduler container's local time (TZ=Europe/London)
+make schedule-doctor   # verify docker socket + compose in the scheduler
+make schedule-shell    # shell into the scheduler container
 
 # Convenience
 make flow-now        # run full flow now (host) with logging)
