@@ -3,14 +3,14 @@
 ## What is it?
 Dockerised, reproducible pipeline to:
 
-### The Ingestion, ETL, Curation service: **Pull**
+### 1.  The Ingestion, ETL, Curation service: <span style="color:blue">**Flow**</span>
 - **Pull** your Strava activities (incremental by default, with a configurable kudos lookback window)
 - Runs in ephemeral containers. data persists on your host via bind mounts (but are not source-controlled for data protection)
 - Land **JSON (bronze)** and **Parquet** shards
 - **Compact** into a **DuckDB** warehouse (gold/views)
 - **Enrich** activities with Strava’s DetailedActivity API (plus a lightweight **kudos sync** so details never lag the list view)
 
-### Cron Scheduler Sidecar service: **Scheduler**
+### 2. Cron Scheduler Sidecar service: <span style="color:blue">**Scheduler**</span>
 - Scheduler sidecar (optional) for daily scheduling using local cron (5am Europe/London by default)
 - Container persists until torn down or system restart
 
@@ -123,7 +123,7 @@ make clean-logs      # wipe logs (plain + JSONL + scheduler)
 
 ## Scheduling (cron-in-a-container)
 
-OS-agnostic scheduler using a tiny Docker image. It runs your flow daily at **05:00 Europe/London** and writes logs into the repo.
+OS-agnostic scheduler using its own Docker image. It runs your flow daily at **05:00 Europe/London** and writes logs into the repo.
 
 **One-time start**
 ```bash
@@ -312,7 +312,7 @@ unable to get local issuer certificate
 ```
 …your network is likely doing HTTPS inspection (e.g., **Zscaler**). Export the CA(s) from **Chrome** and point Requests at them:
 
-1. Open `https://www.strava.com` → padlock → **Certificate** → in **Certificate Hierarchy**, export the **top** item (e.g., **Zscaler Root CA**) as Base-64, and also export the **intermediate** directly under it.  
+1. Open `https://www.strava.com` → padlock / slider on left of URL → **Connection is secure** → **Certificate is valid** → in **Certificate Hierarchy**, export the **top** item (e.g., **Zscaler Root CA**) as Base-64, and also export the **intermediate** directly under it.  
 2. Convert to PEM if needed, then bundle:
    ```bash
    cat zscaler-root.pem zscaler-intermediate.pem > secrets/corp-bundle.pem
